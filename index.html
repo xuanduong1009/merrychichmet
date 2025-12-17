@@ -120,14 +120,26 @@
                 ctx.fillStyle = '#D32F2F'; ctx.fillRect(20, 20, 88, 88);
                 ctx.fillStyle = '#FFD700'; ctx.fillRect(54, 20, 20, 88); ctx.fillRect(20, 54, 88, 20);
                 ctx.strokeStyle = "rgba(0,0,0,0.3)"; ctx.lineWidth=2; ctx.strokeRect(20,20,88,88);
+
+            } else if (type === 'snow') {
+                const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, 40);
+                grd.addColorStop(0, 'rgba(255,255,255,1)');
+                grd.addColorStop(0.25, 'rgba(255,255,255,0.9)');
+                grd.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.fillStyle = grd;
+                ctx.beginPath();
+                ctx.arc(cx, cy, 42, 0, Math.PI * 2);
+                ctx.fill();
             }
+
             return new THREE.CanvasTexture(canvas);
         }
 
         const textures = {
             gold: createCustomTexture('gold_glow'),
             red: createCustomTexture('red_light'),
-            gift: createCustomTexture('gift_red')
+            gift: createCustomTexture('gift_red'),
+            snow: createCustomTexture('snow')
         };
 
         // ==========================================
@@ -140,13 +152,22 @@
             explodeRadius: 65,  
             photoOrbitRadius: 25,
             treeHeight: 70,
-            treeBaseRadius: 35
+            treeBaseRadius: 35,
+
+            // SNOW CONFIG (FULL SCREEN)
+            snowCount: 1200,
+            snowArea: { x: 240, y: 200, z: 240 },
+            snowSpeedMin: 0.15,
+            snowSpeedMax: 0.6
         };
 
         let scene, camera, renderer;
         let groupGold, groupRed, groupGift; 
         let photoMeshes = [];    
         let titleMesh, starMesh, loveMesh;
+
+        // Snow
+        let snowSystem;
         
         let state = 'TREE'; 
         let selectedIndex = 0;
@@ -174,6 +195,11 @@
 
             createPhotos();
             createDecorations();
+
+            // Create snow after everything
+            snowSystem = createSnowSystem(CONFIG.snowCount);
+            scene.add(snowSystem);
+
             animate();
         }
 
@@ -263,6 +289,79 @@
             const points = new THREE.Points(geo, mat);
             scene.add(points);
             return points;
+        }
+
+        // ==========================================
+        // SNOW SYSTEM (FULL SCREEN)
+        // ==========================================
+        function createSnowSystem(count) {
+            const geo = new THREE.BufferGeometry();
+            const positions = new Float32Array(count * 3);
+            const speeds = new Float32Array(count);
+            const driftX = new Float32Array(count);
+            const driftZ = new Float32Array(count);
+
+            const ax = CONFIG.snowArea.x, ay = CONFIG.snowArea.y, az = CONFIG.snowArea.z;
+
+            for (let i = 0; i < count; i++) {
+                positions[i*3]   = (Math.random() - 0.5) * ax;
+                positions[i*3+1] = (Math.random() - 0.5) * ay;
+                positions[i*3+2] = (Math.random() - 0.5) * az;
+
+                speeds[i] = CONFIG.snowSpeedMin + Math.random() * (CONFIG.snowSpeedMax - CONFIG.snowSpeedMin);
+                driftX[i] = (Math.random() - 0.5) * 0.02;
+                driftZ[i] = (Math.random() - 0.5) * 0.02;
+            }
+
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geo.userData = { speeds, driftX, driftZ };
+
+            const mat = new THREE.PointsMaterial({
+                size: 1.6,
+                map: textures.snow,
+                transparent: true,
+                opacity: 0.9,
+                depthWrite: false,
+                blending: THREE.NormalBlending,
+                sizeAttenuation: true
+            });
+
+            const points = new THREE.Points(geo, mat);
+            return points;
+        }
+
+        function updateSnow(points, time) {
+            const pos = points.geometry.attributes.position.array;
+            const { speeds, driftX, driftZ } = points.geometry.userData;
+
+            const ax = CONFIG.snowArea.x, ay = CONFIG.snowArea.y, az = CONFIG.snowArea.z;
+            const halfY = ay / 2;
+
+            for (let i = 0; i < speeds.length; i++) {
+                const idx = i * 3;
+
+                // rơi xuống
+                pos[idx + 1] -= speeds[i];
+
+                // bay nhẹ theo gió
+                pos[idx]     += driftX[i] + Math.sin(time * 0.8 + i) * 0.002;
+                pos[idx + 2] += driftZ[i] + Math.cos(time * 0.7 + i) * 0.002;
+
+                // rơi khỏi đáy thì respawn lên trên
+                if (pos[idx + 1] < -halfY) {
+                    pos[idx + 1] = halfY;
+                    pos[idx] = (Math.random() - 0.5) * ax;
+                    pos[idx + 2] = (Math.random() - 0.5) * az;
+                }
+
+                // wrap x/z cho khỏi trôi xa
+                if (pos[idx] > ax/2) pos[idx] = -ax/2;
+                if (pos[idx] < -ax/2) pos[idx] = ax/2;
+                if (pos[idx+2] > az/2) pos[idx+2] = -az/2;
+                if (pos[idx+2] < -az/2) pos[idx+2] = az/2;
+            }
+
+            points.geometry.attributes.position.needsUpdate = true;
         }
 
         function createPhotos() {
@@ -412,6 +511,9 @@
             const speed = 0.08;
             const handRotY = (handX - 0.5) * 4.0;
 
+            // Snow update
+            if (snowSystem) updateSnow(snowSystem, time);
+
             updateParticleGroup(groupGold, 'gold', state, speed, handRotY, time);
             updateParticleGroup(groupRed, 'red', state, speed, handRotY, time);
             updateParticleGroup(groupGift, 'gift', state, speed, handRotY, time);
@@ -525,7 +627,11 @@
         }
 
         window.addEventListener('resize', () => {
-            if(camera) { camera.aspect = window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+            if(camera) { 
+                camera.aspect = window.innerWidth/window.innerHeight; 
+                camera.updateProjectionMatrix(); 
+                renderer.setSize(window.innerWidth, window.innerHeight); 
+            }
         });
     </script>
 </body>
